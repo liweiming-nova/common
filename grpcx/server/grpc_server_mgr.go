@@ -47,10 +47,10 @@ type GrpcConfig struct {
 	RegisterNcSecretKey   string   `toml:"register_nc_secret_key"`
 
 	// etcd register
-	EtcdEndpoints   []string
-	EtcdDialTimeout time.Duration
-	EtcdLeaseTTL    int64
-	ServiceName     string
+	EtcdEndpoints   []string      `toml:"etcd_endpoints"`
+	EtcdDialTimeout time.Duration `toml:"etcd_dial_timeout"`
+	EtcdLeaseTTL    int64         `toml:"etcd_lease_ttl"`
+	ServiceName     string        `toml:"service_name"`
 
 	// log plugin
 	EnableLogPlugin   bool `toml:"enable_log_plugin"`
