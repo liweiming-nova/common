@@ -92,7 +92,6 @@ func StartServer(name string, registerFunc func(*grpc.Server), interceptors []gr
 	}
 
 	servers[name] = server
-	lock.Unlock()
 
 	utils.Lock(1)
 
