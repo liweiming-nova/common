@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"github.com/liweiming-nova/common/app/plugins"
+	"github.com/liweiming-nova/common/utils"
 	"log"
 	"os"
 	"reflect"
@@ -65,6 +66,6 @@ func (app *App) Start() (err error) {
 	if err != nil {
 		return
 	}
-
+	utils.Wait()
 	return
 }

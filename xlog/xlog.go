@@ -3,8 +3,25 @@ package xlog
 import "context"
 
 var (
-	DefaultLogger xLogger = new(ZeroLogger)
+	DefaultLogger xLogger
 )
+
+func init() {
+	// 默认
+	zeroLogger := NewZeroLogger()
+	zeroLogger.Init(&LogConfig{
+		Level:        "info",
+		LogFile:      "runtime/logs",
+		Console:      true,
+		MaxSize:      100,
+		MaxAge:       7,
+		Compress:     true,
+		JsonFormat:   false,
+		EnableCaller: false,
+		NewFormat:    false,
+	})
+	DefaultLogger = zeroLogger
+}
 
 type LogConfig struct {
 	Level        string `json:"level" yaml:"level" toml:"level"`                              // 日志打印级别
