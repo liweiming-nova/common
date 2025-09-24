@@ -4,17 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/liweiming-nova/common/config"
-	"github.com/liweiming-nova/common/config/options"
-	"github.com/liweiming-nova/common/grpcx/discovery"
-	"github.com/liweiming-nova/common/xlog"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/connectivity"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/protobuf/proto"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/liweiming-nova/common/config"
+	"github.com/liweiming-nova/common/config/options"
+	"github.com/liweiming-nova/common/grpcx/discovery"
+	"github.com/liweiming-nova/common/grpcx/instance"
+	"github.com/liweiming-nova/common/xlog"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 )
 
 type rpcConfig struct {
@@ -61,6 +63,9 @@ func NewGrpcClientPool(count int, cfg *Cfg, discovery discovery.ServiceDiscovery
 		count = 10
 	}
 
+	if cfg.DialTimeout <= 0 {
+		cfg.DialTimeout = 10 * time.Second
+	}
 	pool := &GrpcClientPool{
 		count:         uint64(count),
 		clients:       make([]*grpc.ClientConn, count),
@@ -68,6 +73,7 @@ func NewGrpcClientPool(count int, cfg *Cfg, discovery discovery.ServiceDiscovery
 		selectMode:    cfg.DialSelectMode,
 		clientTimeout: cfg.DialTimeout,
 		discovery:     discovery,
+		serviceName:   cfg.ServiceName,
 	}
 
 	// 预创建所有客户端连接
@@ -111,26 +117,23 @@ func (p *GrpcClientPool) newClientConn() (*grpc.ClientConn, error) {
 	}
 	// 从服务发现选一个 todo
 	addrIndex := atomic.AddUint64(&p.addrIdx, 1) % uint64(len(kvPairs))
-	target = kvPairs[addrIndex].Value
+	value := kvPairs[addrIndex].Value
+	// 统一通过公共方法提取地址
+	target = instance.ExtractAddress(value)
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithBlock(),
 	}
 
-	conn, err := grpc.NewClient(target, opts...)
+	// 使用带超时的 DialContext
+	ctxDial, cancelDial := context.WithTimeout(context.Background(), p.clientTimeout)
+	defer cancelDial()
+	conn, err := grpc.DialContext(ctxDial, target, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client for %s: %w", target, err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), p.clientTimeout)
-	defer cancel()
-
-	state := conn.GetState()
-	if state != connectivity.Ready {
-		if !conn.WaitForStateChange(ctx, state) {
-			conn.Close()
-			return nil, fmt.Errorf("timeout waiting for connection to be ready: %s", target)
-		}
-	}
+	// 使用阻塞拨号已由 DialContext 控制超时，若失败会返回 err
 
 	return conn, nil
 }
@@ -154,8 +157,22 @@ func (p *GrpcClientPool) Call(ctx context.Context, method string, req proto.Mess
 		return fmt.Errorf("no available client in pool")
 	}
 
+	// 规范化方法名：
+	// - 若已是全限定名（以 / 开头），直接使用
+	// - 否则自动拼接为 /<ServiceName>/<Method>
+	normalized := method
+	if !strings.HasPrefix(method, "/") {
+		svc := strings.TrimSpace(p.serviceName)
+		if svc == "" {
+			return fmt.Errorf("service name is empty, cannot build full method name for %q", method)
+		}
+		// 确保服务名不带前导斜杠
+		svc = strings.TrimPrefix(svc, "/")
+		normalized = "/" + svc + "/" + strings.TrimPrefix(method, "/")
+	}
+
 	// 可选：添加 metadata、超时控制、重试逻辑
-	return client.Invoke(ctx, method, req, resp)
+	return client.Invoke(ctx, normalized, req, resp)
 }
 
 var (
@@ -203,7 +220,7 @@ func addPool(name string) (r *GrpcClientPool, err error) {
 	if cfg, err = loadCfg(name); err != nil {
 		return
 	}
-	r, err = NewRpcClientPool(cfg)
+	r, err = NewRpcClientPool(name, cfg)
 
 	lock.Lock()
 	pools[name] = r

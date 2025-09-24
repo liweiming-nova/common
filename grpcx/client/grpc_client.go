@@ -4,9 +4,9 @@ import (
 	"github.com/liweiming-nova/common/grpcx/discovery"
 )
 
-func NewRpcClientPool(cfg *Cfg) (r *GrpcClientPool, err error) {
+func NewRpcClientPool(name string, cfg *Cfg) (r *GrpcClientPool, err error) {
 	maxActive := cfg.PoolMaxActive
-	dis, err := buildDialDiscovery(cfg)
+	dis, err := buildDialDiscovery(name, cfg)
 	if err != nil {
 		return
 	}
@@ -14,7 +14,7 @@ func NewRpcClientPool(cfg *Cfg) (r *GrpcClientPool, err error) {
 	return
 }
 
-func buildDialDiscovery(cfg *Cfg) (r discovery.ServiceDiscovery, err error) {
-	r, err = discovery.NewEtcdDiscovery("/services/" + cfg.ServiceName)
+func buildDialDiscovery(name string, cfg *Cfg) (r discovery.ServiceDiscovery, err error) {
+	r, err = discovery.NewEtcdDiscovery("/services/" + name)
 	return
 }

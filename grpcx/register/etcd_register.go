@@ -2,12 +2,13 @@ package register
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"github.com/liweiming-nova/common/etcd"
-	clientv3 "go.etcd.io/etcd/client/v3"
 	"strings"
 	"time"
+
+	"github.com/liweiming-nova/common/etcd"
+	"github.com/liweiming-nova/common/grpcx/instance"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 type EtcdRegister struct {
@@ -51,14 +52,12 @@ func (r *EtcdRegister) Register(serviceName string, address string, metadata map
 	}
 	r.leaseID = leaseResp.ID
 
-	// 构造 value：JSON 格式或简单字符串，建议 JSON 便于解析
-	value := map[string]interface{}{
-		"address":       address,
-		"metadata":      metadata,
-		"registered_at": time.Now().Unix(),
-	}
-
-	valueBytes, err := json.Marshal(value)
+	// 构造 value：统一使用公共实例编码
+	valueBytes, err := instance.Encode(&instance.ServiceInstance{
+		Address:      address,
+		Metadata:     metadata,
+		RegisteredAt: time.Now().Unix(),
+	})
 	if err != nil {
 		lease.Revoke(ctx, r.leaseID)
 		cancel()
