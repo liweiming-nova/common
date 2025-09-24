@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/liweiming-nova/common/config"
 	"github.com/liweiming-nova/common/config/options"
@@ -23,29 +24,11 @@ type rpcConfig struct {
 }
 
 type Cfg struct {
-	// dial
-	DialAddrs          []string      `toml:"addrs"`
-	DialDiscovery      string        `toml:"discovery"`
+	DialTimeout        time.Duration `toml:"dial_timeout"`
 	DialFailMode       string        `toml:"fail_mode"`
 	DialSelectMode     string        `toml:"select_mode"`
 	DialConnectTimeout time.Duration `toml:"dial_timeout"`
-
-	// zookeeper register
-	DiscoveryZkBasePath string `toml:"discovery_zk_basepath"`
-
-	// nacos register
-	RegisterNcNamespaceId string `toml:"register_nc_namespace_id"`
-	RegisterNcCacheDir    string `toml:"register_nc_cache_dir"`
-	RegisterNcLogDir      string `toml:"register_nc_log_dir"`
-	RegisterNcLogLevel    string `toml:"register_nc_log_level"`
-	RegisterNcAccessKey   string `toml:"register_nc_access_key"`
-	RegisterNcSecretKey   string `toml:"register_nc_secret_key"`
-
-	// etcd
-	EtcdDialTimeout time.Duration `toml:"etcd_dial_timeout"`
-	EtcdLeaseTTL    int64         `toml:"etcd_lease_ttl"`
-	ServiceName     string        `toml:"service_name"`
-
+	ServiceName        string        `toml:"service_name"`
 	// pool
 	PoolMaxActive int `toml:"pool_max_active"` // 最大活跃连接数
 }
@@ -58,10 +41,7 @@ type GrpcClientPool struct {
 	clients []*grpc.ClientConn
 	mu      sync.RWMutex
 
-	// 静态配置
-	dialAddrs          []string
-	dialConnectTimeout time.Duration
-
+	clientTimeout time.Duration
 	// todo  节点选择和失败重试策略
 	failMode   string
 	selectMode string
@@ -80,18 +60,14 @@ func NewGrpcClientPool(count int, cfg *Cfg, discovery discovery.ServiceDiscovery
 	if count <= 0 {
 		count = 10
 	}
-	if len(cfg.DialAddrs) == 0 {
-		return nil, fmt.Errorf("no dial addresses provided")
-	}
 
 	pool := &GrpcClientPool{
-		count:              uint64(count),
-		clients:            make([]*grpc.ClientConn, count),
-		dialAddrs:          cfg.DialAddrs,
-		dialConnectTimeout: cfg.DialConnectTimeout,
-		failMode:           cfg.DialFailMode,
-		selectMode:         cfg.DialSelectMode,
-		discovery:          discovery,
+		count:         uint64(count),
+		clients:       make([]*grpc.ClientConn, count),
+		failMode:      cfg.DialFailMode,
+		selectMode:    cfg.DialSelectMode,
+		clientTimeout: cfg.DialTimeout,
+		discovery:     discovery,
 	}
 
 	// 预创建所有客户端连接
@@ -125,28 +101,17 @@ func (p *GrpcClientPool) Close() {
 func (p *GrpcClientPool) newClientConn() (*grpc.ClientConn, error) {
 	var target string
 
-	if p.discovery != nil {
-		kvPairs := p.discovery.GetServices()
-		if len(kvPairs) == 0 {
-			// 降级到静态地址
-			if len(p.dialAddrs) == 0 {
-				return nil, fmt.Errorf("no available services and no static addrs")
-			}
-			addrIndex := atomic.AddUint64(&p.addrIdx, 1) % uint64(len(p.dialAddrs))
-			target = p.dialAddrs[addrIndex]
-		} else {
-			// 从服务发现选一个
-			addrIndex := atomic.AddUint64(&p.addrIdx, 1) % uint64(len(kvPairs))
-			target = kvPairs[addrIndex].Value
-		}
-	} else {
-		if len(p.dialAddrs) == 0 {
-			return nil, fmt.Errorf("no dial addresses")
-		}
-		addrIndex := atomic.AddUint64(&p.addrIdx, 1) % uint64(len(p.dialAddrs))
-		target = p.dialAddrs[addrIndex]
+	if p.discovery == nil {
+		return nil, errors.New("discovery is nil")
 	}
 
+	kvPairs := p.discovery.GetServices()
+	if len(kvPairs) == 0 {
+		return nil, errors.New("discovery has no services")
+	}
+	// 从服务发现选一个 todo
+	addrIndex := atomic.AddUint64(&p.addrIdx, 1) % uint64(len(kvPairs))
+	target = kvPairs[addrIndex].Value
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	}
@@ -156,7 +121,7 @@ func (p *GrpcClientPool) newClientConn() (*grpc.ClientConn, error) {
 		return nil, fmt.Errorf("failed to create client for %s: %w", target, err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), p.dialConnectTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), p.clientTimeout)
 	defer cancel()
 
 	state := conn.GetState()

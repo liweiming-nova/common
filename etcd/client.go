@@ -21,7 +21,6 @@ type Config struct {
 		Username    string        `toml:"username" yaml:"username" mapstructure:"username"`
 		Password    string        `toml:"password" yaml:"password" mapstructure:"password"`
 		LeaseTTL    int64         `toml:"lease_ttl" yaml:"lease_ttl" mapstructure:"lease_ttl"`
-		Prefix      string        `toml:"prefix" yaml:"prefix" mapstructure:"prefix"`
 
 		TLS struct {
 			CertFile string `toml:"cert_file" yaml:"cert_file" mapstructure:"cert_file"`

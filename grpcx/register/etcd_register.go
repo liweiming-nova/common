@@ -78,22 +78,22 @@ func (r *EtcdRegister) Register(serviceName string, address string, metadata map
 
 	// 启动租约自动续期协程（关键！）
 	go func() {
-		ticker := time.NewTicker(5 * time.Second) // 每 5 秒续一次（小于 TTL）
-		defer ticker.Stop()
+		kaChan, err := lease.KeepAlive(context.Background(), r.leaseID)
+		if err != nil {
+			fmt.Printf("[EtcdRegister] KeepAlive failed: %v\n", err)
+			return
+		}
 
 		for {
 			select {
-			case <-ticker.C:
-				keepAliveCtx, cancelKeep := context.WithTimeout(ctx, 3*time.Second)
-				_, err := lease.KeepAlive(keepAliveCtx, r.leaseID)
-				cancelKeep()
-				if err != nil {
-					// 续约失败，可能是网络问题或 etcd 不可达，记录日志但不 panic
-					fmt.Printf("[EtcdRegister] Failed to keep lease alive for %s: %v\n", serviceKey, err)
-					continue
+			case _, ok := <-kaChan:
+				if !ok {
+					fmt.Println("[EtcdRegister] KeepAlive channel closed")
+					return
 				}
+				// 正常收到 keep-alive 响应
 			case <-ctx.Done():
-				// 上层取消，退出循环
+				lease.Close() // 可选：关闭 lease
 				return
 			}
 		}

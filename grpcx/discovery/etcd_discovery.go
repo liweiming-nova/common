@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"github.com/liweiming-nova/common/etcd"
 	"github.com/liweiming-nova/common/xlog"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"strings"
@@ -18,17 +19,10 @@ type EtcdDiscovery struct {
 	watchersMu  sync.RWMutex
 }
 
-func NewEtcdDiscovery(endpoints []string, servicePath string, dialTimeout time.Duration) (*EtcdDiscovery, error) {
-	cli, err := clientv3.New(clientv3.Config{
-		Endpoints:   endpoints,
-		DialTimeout: dialTimeout,
-	})
-	if err != nil {
-		return nil, err
-	}
-
+func NewEtcdDiscovery(servicePath string) (*EtcdDiscovery, error) {
+	cli := etcd.Get()
 	d := &EtcdDiscovery{
-		client:      cli,
+		client:      cli.DefaultClient(),
 		servicePath: servicePath,
 		watchers:    make(map[chan []*KVPair]context.CancelFunc),
 	}
@@ -127,9 +121,7 @@ func (d *EtcdDiscovery) RemoveWatcher(ch chan []*KVPair) {
 
 func (d *EtcdDiscovery) Clone(servicePath string) (ServiceDiscovery, error) {
 	return NewEtcdDiscovery(
-		[]string{},
 		servicePath,
-		5*time.Second,
 	)
 }
 

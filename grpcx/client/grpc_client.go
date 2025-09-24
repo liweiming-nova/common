@@ -15,12 +15,6 @@ func NewRpcClientPool(cfg *Cfg) (r *GrpcClientPool, err error) {
 }
 
 func buildDialDiscovery(cfg *Cfg) (r discovery.ServiceDiscovery, err error) {
-	switch cfg.DialDiscovery {
-	case "multiple_servers_discovery":
-	case "zookeeper_discovery":
-	case "nacos_discovery":
-	case "etcd_discovery":
-		r, err = discovery.NewEtcdDiscovery(cfg.DialAddrs, "/services/"+cfg.ServiceName, cfg.EtcdDialTimeout)
-	}
+	r, err = discovery.NewEtcdDiscovery("/services/" + cfg.ServiceName)
 	return
 }
