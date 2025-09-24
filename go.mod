@@ -4,8 +4,10 @@ go 1.23.4
 
 require (
 	github.com/BurntSushi/toml v1.5.0
+	github.com/avast/retry-go v3.0.0+incompatible
 	github.com/bwmarrin/snowflake v0.3.0
 	github.com/confluentinc/confluent-kafka-go v1.9.2
+	github.com/go-redis/redis/v8 v8.11.5
 	github.com/google/uuid v1.6.0
 	github.com/panjf2000/ants/v2 v2.11.3
 	github.com/rs/zerolog v1.34.0
@@ -22,13 +24,11 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
-	github.com/avast/retry-go v3.0.0+incompatible // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/coreos/go-semver v0.3.1 // indirect
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/fsnotify/fsnotify v1.8.0 // indirect
-	github.com/go-redis/redis/v8 v8.11.5 // indirect
 	github.com/go-sql-driver/mysql v1.8.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
