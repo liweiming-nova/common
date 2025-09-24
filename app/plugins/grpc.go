@@ -40,7 +40,7 @@ func NewGRPCPlugins(options ...Options) *GRPCPlugins {
 }
 
 func (plugins *GRPCPlugins) Start(ctx *PluginContext) error {
-	if plugins.registerFunc != nil {
+	if plugins.registerFunc == nil {
 		panic("grpc registerFunc is nil")
 	}
 	return server.StartServer(plugins.name, plugins.registerFunc, plugins.interceptor)

@@ -25,6 +25,9 @@ func NewGrpcServer(cfg *GrpcConfig, name string, registerFunc func(*grpc.Server)
 		cfg:  cfg,
 		name: name,
 	}
+	if r.name == "" {
+		r.name = "default"
+	}
 
 	if cfg.Register == "" {
 		cfg.Register = "etcd"
