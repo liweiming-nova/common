@@ -1,0 +1,16 @@
+
+[rpc]
+[rpc.client]
+[rpc.client.user_server]
+discovery = "etcd"
+fail_mode = "test"
+select_mode = "test"
+dial_timeout =  10
+service_name = "user.UserServer"
+
+[etcd]
+endpoints = ["http://localhost:2379"]
+dial_timeout = "5s"
+username = "root"
+password = "lwm0618"
+lease_ttl = 10

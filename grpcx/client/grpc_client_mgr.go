@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,10 +14,24 @@ import (
 	"github.com/liweiming-nova/common/config/options"
 	"github.com/liweiming-nova/common/grpcx/discovery"
 	"github.com/liweiming-nova/common/grpcx/instance"
+	"github.com/liweiming-nova/common/utils"
 	"github.com/liweiming-nova/common/xlog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
+)
+
+const (
+	// 失败重试机制
+	FailModeNothing  = "nothing"  // 不重试
+	FailModeLocal    = "local"    // 原地重试（同一连接）
+	FailModeFailover = "failover" // 降级重试（切换连接）
+
+	// 节点选择机制
+	SelectModeRoundRobin = "round_robin" // 轮询
+	SelectModeRandom     = "random"      // 随机
+	SelectModeScore      = "score"       // 评分
 )
 
 type rpcConfig struct {
@@ -33,6 +48,8 @@ type Cfg struct {
 	ServiceName        string        `toml:"service_name"`
 	// pool
 	PoolMaxActive int `toml:"pool_max_active"` // 最大活跃连接数
+	// retry
+	RetryTimes int `toml:"retry_times"` // 重试次数（针对 local/failover）
 }
 
 // GrpcClientPool 是一个固定大小的 gRPC 客户端连接池
@@ -44,14 +61,17 @@ type GrpcClientPool struct {
 	mu      sync.RWMutex
 
 	clientTimeout time.Duration
-	// todo  节点选择和失败重试策略
-	failMode   string
-	selectMode string
+	failMode      string
+	selectMode    string
+	retryTimes    int
 
 	// 服务发现
 	discovery   discovery.ServiceDiscovery
 	serviceName string
 	addrIdx     uint64
+
+	// 选择器
+	selector Selector
 
 	// Watch 支持（可选）
 	watchCh chan []*discovery.KVPair
@@ -66,6 +86,17 @@ func NewGrpcClientPool(count int, cfg *Cfg, discovery discovery.ServiceDiscovery
 	if cfg.DialTimeout <= 0 {
 		cfg.DialTimeout = 10 * time.Second
 	}
+
+	if cfg.DialFailMode == "" {
+		cfg.DialFailMode = FailModeNothing
+	}
+	if cfg.DialSelectMode == "" {
+		cfg.DialSelectMode = SelectModeRoundRobin
+	}
+	if cfg.RetryTimes < 0 {
+		cfg.RetryTimes = 0
+	}
+
 	pool := &GrpcClientPool{
 		count:         uint64(count),
 		clients:       make([]*grpc.ClientConn, count),
@@ -74,7 +105,11 @@ func NewGrpcClientPool(count int, cfg *Cfg, discovery discovery.ServiceDiscovery
 		clientTimeout: cfg.DialTimeout,
 		discovery:     discovery,
 		serviceName:   cfg.ServiceName,
+		retryTimes:    cfg.RetryTimes,
 	}
+
+	// 初始化选择器（默认轮询）
+	pool.selector = GetSelector(cfg.DialSelectMode, pool)
 
 	// 预创建所有客户端连接
 	for i := 0; i < count; i++ {
@@ -105,8 +140,6 @@ func (p *GrpcClientPool) Close() {
 
 // newClientConn 创建单个 grpc.ClientConn（简化版，可扩展服务发现）
 func (p *GrpcClientPool) newClientConn() (*grpc.ClientConn, error) {
-	var target string
-
 	if p.discovery == nil {
 		return nil, errors.New("discovery is nil")
 	}
@@ -115,11 +148,14 @@ func (p *GrpcClientPool) newClientConn() (*grpc.ClientConn, error) {
 	if len(kvPairs) == 0 {
 		return nil, errors.New("discovery has no services")
 	}
-	// 从服务发现选一个 todo
-	addrIndex := atomic.AddUint64(&p.addrIdx, 1) % uint64(len(kvPairs))
-	value := kvPairs[addrIndex].Value
-	// 统一通过公共方法提取地址
-	target = instance.ExtractAddress(value)
+	// 根据选择策略挑选目标（优先使用自定义选择器）
+	target := ""
+	if p.selector != nil {
+		target = p.selector.Pick(kvPairs)
+	}
+	if target == "" { // 兜底使用内置逻辑
+		target = p.pickTarget(kvPairs)
+	}
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithBlock(),
@@ -136,6 +172,44 @@ func (p *GrpcClientPool) newClientConn() (*grpc.ClientConn, error) {
 	// 使用阻塞拨号已由 DialContext 控制超时，若失败会返回 err
 
 	return conn, nil
+}
+
+// pickTarget 根据 selectMode 选择目标地址
+func (p *GrpcClientPool) pickTarget(kvPairs []*discovery.KVPair) string {
+	n := len(kvPairs)
+	if n == 0 {
+		return ""
+	}
+	mode := strings.ToLower(strings.TrimSpace(p.selectMode))
+	switch mode {
+	case SelectModeRandom:
+		idx := rand.Intn(n)
+		return instance.ExtractAddress(kvPairs[idx].Value)
+	case SelectModeScore:
+		// 简单评分选择：抽样 3 个，选分最高；若不足 3 个则全量找最高
+		bestIdx, bestScore := 0, float64(0)
+		sample := 3
+		if n < sample {
+			sample = n
+		}
+		for i := 0; i < sample; i++ {
+			idx := i
+			if n > sample {
+				idx = rand.Intn(n)
+			}
+			score := instance.ExtractScore(kvPairs[idx].Value)
+			if score > bestScore {
+				bestScore = score
+				bestIdx = idx
+			}
+		}
+		return instance.ExtractAddress(kvPairs[bestIdx].Value)
+	case SelectModeRoundRobin:
+		fallthrough
+	default:
+		idx := int(atomic.AddUint64(&p.addrIdx, 1) % uint64(n))
+		return instance.ExtractAddress(kvPairs[idx].Value)
+	}
 }
 
 // Get 返回一个客户端（不移除，不关闭，线程安全）
@@ -171,8 +245,62 @@ func (p *GrpcClientPool) Call(ctx context.Context, method string, req proto.Mess
 		normalized = "/" + svc + "/" + strings.TrimPrefix(method, "/")
 	}
 
-	// 可选：添加 metadata、超时控制、重试逻辑
-	return client.Invoke(ctx, normalized, req, resp)
+	// 注入 trace_id 到 outgoing metadata
+	ctx = withTraceID(ctx)
+
+	// 重试策略
+	switch strings.ToLower(strings.TrimSpace(p.failMode)) {
+	case FailModeNothing:
+		return client.Invoke(ctx, normalized, req, resp)
+	case FailModeLocal: // 原地重试：同一连接重试
+		var lastErr error
+		for i := 0; i <= p.retryTimes; i++ {
+			if err := client.Invoke(ctx, normalized, req, resp); err != nil {
+				lastErr = err
+				continue
+			}
+			return nil
+		}
+		return lastErr
+	case FailModeFailover: // 降级重试：更换节点
+		var lastErr error
+		for i := 0; i <= p.retryTimes; i++ {
+			cc := p.Get()
+			if cc == nil {
+				lastErr = fmt.Errorf("no available client in pool")
+				continue
+			}
+			if err := cc.Invoke(ctx, normalized, req, resp); err != nil {
+				lastErr = err
+				continue
+			}
+			return nil
+		}
+		return lastErr
+	default:
+		return client.Invoke(ctx, normalized, req, resp)
+	}
+}
+
+// withTraceID 确保在 outgoing metadata 中携带 trace_id
+func withTraceID(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// 优先从已有的 outgoing/incoming metadata 读取
+	if md, ok := metadata.FromOutgoingContext(ctx); ok {
+		if vals := md.Get(xlog.TraceId); len(vals) > 0 && vals[0] != "" {
+			return ctx
+		}
+	}
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if vals := md.Get(xlog.TraceId); len(vals) > 0 && vals[0] != "" {
+			return metadata.AppendToOutgoingContext(ctx, xlog.TraceId, vals[0])
+		}
+	}
+	// 兜底：生成一个新的 trace_id（无连贯上游时）
+	traceID := strings.ReplaceAll(utils.UUID(), "-", "")
+	return metadata.AppendToOutgoingContext(ctx, xlog.TraceId, traceID)
 }
 
 var (
